@@ -32,6 +32,8 @@ import {
 
 export interface ExtensionOAuthConfig {
 	name: string;
+	/** Whether access through this auth method is backed by a provider subscription. */
+	isSubscription?: boolean;
 	/** @deprecated Retained for extension source compatibility; ignored by canonical auth flows. */
 	usesCallbackServer?: boolean;
 	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
@@ -163,6 +165,15 @@ function modelFromJson(
 	};
 }
 
+function findModelDefaults(models: readonly Model<Api>[], modelId: string, api?: Api): Model<Api> | undefined {
+	return (
+		models.find((model) => model.id === modelId) ??
+		(api ? models.find((model) => model.api === api) : undefined) ??
+		models.find((model) => model.api === "openai-completions") ??
+		models[0]
+	);
+}
+
 function applyModelsJson(
 	providerId: string,
 	baseModels: readonly Model<Api>[],
@@ -195,7 +206,7 @@ function applyModelsJson(
 	}));
 	for (const definition of config.models ?? []) {
 		const existingIndex = models.findIndex((model) => model.id === definition.id);
-		const defaults = existingIndex >= 0 ? models[existingIndex] : models[0];
+		const defaults = findModelDefaults(models, definition.id, definition.api ?? config.api);
 		const model = modelFromJson(providerId, definition, config, defaults);
 		if (existingIndex >= 0) models[existingIndex] = model;
 		else models.push(model);
@@ -213,7 +224,7 @@ function applyExtension(
 		return config.baseUrl ? models.map((model) => ({ ...model, baseUrl: config.baseUrl! })) : [...models];
 	}
 	return config.models.map((definition) => {
-		const defaults = models.find((model) => model.id === definition.id) ?? models[0];
+		const defaults = findModelDefaults(models, definition.id, definition.api ?? config.api);
 		const api = definition.api ?? config.api ?? defaults?.api;
 		if (!api) {
 			throw new Error(
@@ -235,6 +246,7 @@ function applyExtension(
 function adaptOAuth(config: ExtensionOAuthConfig): OAuthAuth {
 	return {
 		name: config.name,
+		isSubscription: config.isSubscription,
 		login: async (callbacks) => {
 			const credential = await config.login({
 				onAuth: (info) => callbacks.notify({ type: "auth_url", ...info }),
@@ -470,7 +482,7 @@ export function composeModelProvider(
 				: api.stream(model, context, options);
 		});
 
-	return {
+	const provider: Provider = {
 		id: providerId,
 		name: extension?.name ?? config?.name ?? base?.name ?? extension?.oauth?.name ?? providerId,
 		baseUrl: extension?.baseUrl ?? config?.baseUrl ?? base?.baseUrl,
@@ -506,6 +518,17 @@ export function composeModelProvider(
 		stream: (model, context, options) => streamWith(model, context, options, false),
 		streamSimple: (model, context, options) => streamWith(model, context, options, true),
 	};
+
+	const fetchDeferred = base?.fetchDeferred;
+	if (fetchDeferred) {
+		provider.fetchDeferred = (model, handle, options) => fetchDeferred(model, handle, options);
+	}
+	const cancelDeferred = base?.cancelDeferred;
+	if (cancelDeferred) {
+		provider.cancelDeferred = (model, handle, options) => cancelDeferred(model, handle, options);
+	}
+
+	return provider;
 }
 
 export function resolveConfiguredModelHeaders(

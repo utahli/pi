@@ -153,13 +153,14 @@ function finalizeTruncatedResult(
 	pad: boolean,
 ): string {
 	const reset = "\x1b[0m";
+	const hyperlinkClose = getActiveOsc8Close(prefix);
 	const visibleWidth = prefixWidth + ellipsisWidth;
 	let result: string;
 
 	if (ellipsis.length > 0) {
-		result = `${prefix}${reset}${ellipsis}${reset}`;
+		result = `${prefix}${hyperlinkClose}${reset}${ellipsis}${reset}`;
 	} else {
-		result = `${prefix}${reset}`;
+		result = `${prefix}${hyperlinkClose}${reset}`;
 	}
 
 	return pad ? result + " ".repeat(Math.max(0, maxWidth - visibleWidth)) : result;
@@ -478,6 +479,28 @@ function formatOsc8Close(terminator: Osc8Terminator): string {
 	return `\x1b]8;;${terminator}`;
 }
 
+function getActiveOsc8Close(prefix: string): string {
+	if (!prefix.includes("\x1b]8;")) {
+		return "";
+	}
+
+	let activeHyperlink: ActiveHyperlink | null = null;
+	let i = 0;
+	while (i < prefix.length) {
+		const ansi = extractAnsiCode(prefix, i);
+		if (ansi) {
+			const hyperlink = parseOsc8Hyperlink(ansi.code);
+			if (hyperlink !== undefined) {
+				activeHyperlink = hyperlink;
+			}
+			i += ansi.length;
+		} else {
+			i++;
+		}
+	}
+	return activeHyperlink ? formatOsc8Close(activeHyperlink.terminator) : "";
+}
+
 /**
  * Track active ANSI SGR codes to preserve styling across line breaks.
  */
@@ -669,6 +692,10 @@ class AnsiCodeTracker {
 		return result;
 	}
 
+	getActiveBackgroundCode(): string {
+		return this.bgColor ? `\x1b[${this.bgColor}m` : "";
+	}
+
 	hasActiveCodes(): boolean {
 		return (
 			this.bold ||
@@ -714,6 +741,13 @@ function updateTrackerFromText(text: string, tracker: AnsiCodeTracker): void {
 			i++;
 		}
 	}
+}
+
+/** Return only the background color active at the end of an ANSI-styled string. */
+export function getActiveBackgroundAnsi(text: string): string {
+	const tracker = new AnsiCodeTracker();
+	updateTrackerFromText(text, tracker);
+	return tracker.getActiveBackgroundCode();
 }
 
 /**
